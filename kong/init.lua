@@ -162,11 +162,26 @@ end
 
 
 local function execute_cache_warmup(kong_config)
-  if kong_config.database == "off" then
-    return true
-  end
-
   if ngx.worker.id() == 0 then
+    if kong_config.database == "off" then
+      local old_hash = declarative.get_current_hash()
+      local dc = declarative.new_config(kong_config)
+      local entities, err, _, _, new_hash = dc:parse_file(kong_config.declarative_config)
+      if old_hash == new_hash then
+        return true
+      end
+      if not declarative_entities then
+        error(err)
+      end
+      local ok, err = concurrency.with_worker_mutex({ name = "declarative_config" }, function()
+        return declarative.load_into_cache_with_events(entities, new_hash)
+      end)
+      if not ok then
+        return nil, err
+      end
+      return true
+
+    end
     local ok, err = cache_warmup.execute(kong_config.db_cache_warmup_entities)
     if not ok then
       return nil, err
